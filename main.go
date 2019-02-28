@@ -27,7 +27,7 @@ func backupTable(tableName string, batchSize int64, waitPeriod time.Duration, bu
 	proc.Wg.Wait()
 }
 
-func restoreTable(bucket, prefix, tableName string, batchSize int64, waitPeriod time.Duration, appendToTable bool) {
+func restoreTable(bucket, prefix, tableName string, batchSize int64, waitPeriod time.Duration, appendToTable bool, sourceRegion string) {
 	proc := NewAwsHelper()
 
 	// Check if the table exists and has data in it. If so, abort
@@ -45,7 +45,7 @@ func restoreTable(bucket, prefix, tableName string, batchSize int64, waitPeriod 
 	}
 
 	// Check if a file "_SUCCESS" is present in the directory
-	if exists, err := proc.ExistsInS3(bucket, fmt.Sprintf("%s/_SUCCESS", prefix)); !exists {
+	if exists, err := proc.ExistsInS3(bucket, fmt.Sprintf("%s/_SUCCESS", prefix), sourceRegion); !exists {
 		switch {
 		case err != nil:
 			log.Fatalf("[ERROR] Unable to retrieve the _SUCCESS flag information: %s\nAborting...\n", err)
@@ -55,13 +55,13 @@ func restoreTable(bucket, prefix, tableName string, batchSize int64, waitPeriod 
 	}
 
 	// Pull the manifest from s3 and load it to memory
-	err = proc.LoadManifestFromS3(bucket, fmt.Sprintf("%s/manifest", prefix))
+	err = proc.LoadManifestFromS3(bucket, fmt.Sprintf("%s/manifest", prefix), sourceRegion)
 	if err != nil {
 		log.Fatalf("[ERROR] Unable to load the manifest flag information: %s\nAborting...\n", err)
 	}
 
 	// For each file in the manifest pull the file, decode each line and add them to a batch and push them into the table (batch size, then wait and continue)
-	err = proc.S3ToDynamo(tableName, batchSize, waitPeriod)
+	err = proc.S3ToDynamo(tableName, batchSize, waitPeriod, sourceRegion)
 	if err != nil {
 		log.Fatalf("[ERROR] Unable to import the full s3 backup to Dynamo: %s\nAborting...\n", err)
 	}
@@ -69,13 +69,14 @@ func restoreTable(bucket, prefix, tableName string, batchSize int64, waitPeriod 
 
 func main() {
 	var (
-		s3DateSuffix, appendRestore           bool
-		batchSize, waitTime                   int64
-		action, tableName, s3Bucket, s3Folder string
+		s3DateSuffix, appendRestore                         bool
+		batchSize, waitTime                                 int64
+		action, tableName, s3Bucket, s3Folder, sourceRegion string
 	)
 
 	flag.StringVar(&action, "action", "backup", "Action to perform. Only accept 'backup' or 'restore'. Environment variable: ACTION")
 	flag.StringVar(&tableName, "dynamo-table", "", "Name of the Dynamo table to backup from or to restore in. Environment variable: DYNAMO_TABLE")
+	flag.StringVar(&sourceRegion, "source-region", "", "Use only when restoring. The region of the s3 bucket you are reading the bucket from. Environment variable: SOURCE_REGION")
 	flag.StringVar(&s3Bucket, "s3-bucket", "", "Name of the s3 bucket where to put the backup or where to restore from. Environment variable: S3_BUCKET")
 	flag.StringVar(&s3Folder, "s3-folder", "", "Path inside the s3 bucket where to put or grab (for restore) the backup. Environment variable: S3_FOLDER")
 	flag.BoolVar(&s3DateSuffix, "s3-date-folder", false, "Adds an autogenenated suffix folder named using the UTC date in the format YYYY-mm-dd-HH24-MI-SS to the provided S3 folder. Environment variable: S3_DATE_FOLDER")
@@ -88,7 +89,7 @@ func main() {
 	case "backup":
 		backupTable(tableName, batchSize, time.Duration(waitTime)*time.Millisecond, s3Bucket, s3Folder, s3DateSuffix)
 	case "restore":
-		restoreTable(s3Bucket, s3Folder, tableName, batchSize, time.Duration(waitTime)*time.Millisecond, appendRestore)
+		restoreTable(s3Bucket, s3Folder, tableName, batchSize, time.Duration(waitTime)*time.Millisecond, appendRestore, sourceRegion)
 	default:
 		log.Fatalf("[ERROR] Unknown action given. See help for available actions.")
 	}

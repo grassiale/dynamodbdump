@@ -39,10 +39,18 @@ func genNewFileName() string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", uuID[:8], uuID[8:12], uuID[12:16], uuID[16:20], uuID[20:])
 }
 
+func confInitializer(sourceRegion string) *aws.Config {
+	if sourceRegion != "" {
+		return aws.NewConfig().WithRegion(sourceRegion)
+	}
+	return aws.NewConfig()
+
+}
+
 // LoadManifestFromS3 downloads the given manifest file and load it in the
 // ManifestS3 attribute of the struct
-func (h *AwsHelper) LoadManifestFromS3(bucketName, manifestPath string) error {
-	doc, err := h.GetFromS3(bucketName, manifestPath)
+func (h *AwsHelper) LoadManifestFromS3(bucketName, manifestPath string, sourceRegion string) error {
+	doc, err := h.GetFromS3(bucketName, manifestPath, sourceRegion)
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
 			log.Fatalf("[ERROR] Unable to find a manifest flag in the provided folder. Are you sure the backup was successful?\nAborting...\n")
@@ -60,8 +68,9 @@ func (h *AwsHelper) LoadManifestFromS3(bucketName, manifestPath string) error {
 
 // GetFromS3 download a file from s3 to memory (as the files are small by
 // default - just a few Mb).
-func (h *AwsHelper) GetFromS3(bucketName, s3Path string) (*io.ReadCloser, error) {
-	svc := s3.New(h.AwsSession)
+func (h *AwsHelper) GetFromS3(bucketName, s3Path string, sourceRegion string) (*io.ReadCloser, error) {
+
+	svc := s3.New(h.AwsSession, confInitializer(sourceRegion))
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(s3Path),
@@ -75,8 +84,9 @@ func (h *AwsHelper) GetFromS3(bucketName, s3Path string) (*io.ReadCloser, error)
 }
 
 // ExistsInS3 checks that a given path in s3 exists as a file
-func (h *AwsHelper) ExistsInS3(bucketName, s3Path string) (bool, error) {
-	svc := s3.New(h.AwsSession)
+func (h *AwsHelper) ExistsInS3(bucketName, s3Path string, sourceRegion string) (bool, error) {
+
+	svc := s3.New(h.AwsSession, confInitializer(sourceRegion))
 	input := &s3.HeadObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(s3Path),
@@ -130,14 +140,14 @@ func (h *AwsHelper) ReaderToChannel(dataReader *io.ReadCloser) error {
 // S3ToDynamo pulls the s3 files from AwsHelper.ManifestS3 and import them
 // inside the given table using the given batch size (and wait period between
 // each batch)
-func (h *AwsHelper) S3ToDynamo(tableName string, batchSize int64, waitPeriod time.Duration) error {
+func (h *AwsHelper) S3ToDynamo(tableName string, batchSize int64, waitPeriod time.Duration, sourceRegion string) error {
 	var err error
 	go h.ChannelToTable(tableName, batchSize, waitPeriod)
 	h.Wg.Add(1)
 	for _, entry := range h.ManifestS3.Entries {
 		u, _ := url.Parse(entry.URL)
 		if u.Scheme == "s3" {
-			data, err := h.GetFromS3(u.Host, u.Path)
+			data, err := h.GetFromS3(u.Host, u.Path, sourceRegion)
 			if err != nil {
 				return err
 			}

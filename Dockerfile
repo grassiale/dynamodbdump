@@ -8,6 +8,5 @@ RUN apk update \
     && go get github.com/Masterminds/glide \
     && go install github.com/Masterminds/glide \
     && glide install --strip-vendor
-RUN go-wrapper install
-
-CMD ["go-wrapper", "run"]
+RUN go install
+CMD ["go", "run", "./"]
