@@ -34,29 +34,28 @@ func dynamoErrorCheck(err error, waitError time.Duration) error {
 	return nil
 }
 
-// AwsHelper supports a set of helpers around DynamoDB and s3
-type AwsHelper struct {
+// DynamoHelper supports a set of helpers around DynamoDB
+type DynamoHelper struct {
 	AwsSession client.ConfigProvider
 	DynamoSvc  dynamodbiface.DynamoDBAPI
 	Wg         sync.WaitGroup
 	DataPipe   chan map[string]*dynamodb.AttributeValue
-	ManifestS3 S3Manifest
 }
 
-// NewAwsHelper creates a new AwsHelper, initializing an AWS session and a few
+// NewDynamoHelper creates a new DynamoHelper, initializing an AWS session and a few
 // objects like a channel or a DynamoDB client
-func NewAwsHelper() *AwsHelper {
+func NewDynamoHelper() *DynamoHelper {
 	awsSess := session.Must(session.NewSessionWithOptions(session.Options{
 		SharedConfigState: session.SharedConfigEnable,
 	}))
 	dataPipe := make(chan map[string]*dynamodb.AttributeValue)
 	dynamoSvc := dynamodb.New(awsSess)
-	return &AwsHelper{AwsSession: awsSess, DataPipe: dataPipe, DynamoSvc: dynamoSvc}
+	return &DynamoHelper{AwsSession: awsSess, DataPipe: dataPipe, DynamoSvc: dynamoSvc}
 }
 
 // TableToChannel scans an entire DynamoDB table, putting all the output records to a
 // given channel and increment a given waitgroup
-func (h *AwsHelper) TableToChannel(tableName string, batchSize int64, waitPeriod time.Duration) error {
+func (h *DynamoHelper) TableToChannel(tableName string, batchSize int64, waitPeriod time.Duration) error {
 	h.Wg.Add(1)
 
 	var errChk error
@@ -103,7 +102,7 @@ func (h *AwsHelper) TableToChannel(tableName string, batchSize int64, waitPeriod
 // not exist, returns the number of items if exists and -10 in case of an error.
 // If the table status is not "ACTIVE", the returned number will be -2 for
 // "CREATING", -4 for "UPDATING", -8 for "DELETING"
-func (h *AwsHelper) CheckTableEmpty(tbl string) (int64, error) {
+func (h *DynamoHelper) CheckTableEmpty(tbl string) (int64, error) {
 	input := &dynamodb.DescribeTableInput{
 		TableName: aws.String(tbl),
 	}
@@ -137,7 +136,7 @@ func (h *AwsHelper) CheckTableEmpty(tbl string) (int64, error) {
 // Note that the following criteria will be rejected by the AWS SDK:
 // * Any individual item in a batch exceeds 400 KB.
 // * The total request size exceeds 16 MB.
-func (h *AwsHelper) channelToWriteRequests(batchSize, globalIndex int64) []*dynamodb.WriteRequest {
+func (h *DynamoHelper) channelToWriteRequests(batchSize, globalIndex int64) []*dynamodb.WriteRequest {
 	idx := 0
 	dataReq := []*dynamodb.WriteRequest{}
 	for elem := range h.DataPipe {
@@ -153,7 +152,7 @@ func (h *AwsHelper) channelToWriteRequests(batchSize, globalIndex int64) []*dyna
 }
 
 // batchToTable sends a BatchWriteItem to Dynamo
-func (h *AwsHelper) batchToTable(wRequest map[string][]*dynamodb.WriteRequest, waitRetry time.Duration) {
+func (h *DynamoHelper) batchToTable(wRequest map[string][]*dynamodb.WriteRequest, waitRetry time.Duration) {
 	input := &dynamodb.BatchWriteItemInput{
 		ReturnConsumedCapacity: aws.String("TOTAL"),
 		RequestItems:           wRequest,
@@ -182,7 +181,7 @@ func (h *AwsHelper) batchToTable(wRequest map[string][]*dynamodb.WriteRequest, w
 }
 
 // ChannelToTable puts the data from the channel into the given Dynamo table
-func (h *AwsHelper) ChannelToTable(tableName string, batchSize int64, waitPeriod time.Duration) {
+func (h *DynamoHelper) ChannelToTable(tableName string, batchSize int64, waitPeriod time.Duration) {
 	var currentIdx int64
 	currentIdx = 0
 	for {

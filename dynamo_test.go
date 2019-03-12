@@ -35,7 +35,7 @@ func (m *mockDynamoDBClient) ScanPages(params *dynamodb.ScanInput, pager func(*d
 }
 
 func TestTableToChannel(t *testing.T) {
-	h := AwsHelper{}
+	h := DynamoHelper{}
 
 	h.DynamoSvc = &mockDynamoDBClient{}
 	h.DataPipe = make(chan map[string]*dynamodb.AttributeValue)

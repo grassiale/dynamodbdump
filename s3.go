@@ -15,6 +15,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/client"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
@@ -39,18 +41,26 @@ func genNewFileName() string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", uuID[:8], uuID[8:12], uuID[12:16], uuID[16:20], uuID[20:])
 }
 
-func confInitializer(sourceRegion string) *aws.Config {
-	if sourceRegion != "" {
-		return aws.NewConfig().WithRegion(sourceRegion)
-	}
-	return aws.NewConfig()
+// S3Helper supports a set of helpers around DynamoDB
+type S3Helper struct {
+	AwsSession client.ConfigProvider
+	ManifestS3 S3Manifest
+}
 
+// NewS3Helper creates a new S3Helper, initializing an AWS session and a few
+// objects like a channel or a DynamoDB client
+func NewS3Helper(s3Region string) *S3Helper {
+	awsSess := session.Must(session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+		Config:            aws.Config{Region: aws.String(s3Region)},
+	}))
+	return &S3Helper{AwsSession: awsSess}
 }
 
 // LoadManifestFromS3 downloads the given manifest file and load it in the
 // ManifestS3 attribute of the struct
-func (h *AwsHelper) LoadManifestFromS3(bucketName, manifestPath string, sourceRegion string) error {
-	doc, err := h.GetFromS3(bucketName, manifestPath, sourceRegion)
+func (h *S3Helper) LoadManifestFromS3(bucketName, manifestPath string) error {
+	doc, err := h.GetFromS3(bucketName, manifestPath)
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == s3.ErrCodeNoSuchKey {
 			log.Fatalf("[ERROR] Unable to find a manifest flag in the provided folder. Are you sure the backup was successful?\nAborting...\n")
@@ -68,9 +78,9 @@ func (h *AwsHelper) LoadManifestFromS3(bucketName, manifestPath string, sourceRe
 
 // GetFromS3 download a file from s3 to memory (as the files are small by
 // default - just a few Mb).
-func (h *AwsHelper) GetFromS3(bucketName, s3Path string, sourceRegion string) (*io.ReadCloser, error) {
+func (h *S3Helper) GetFromS3(bucketName, s3Path string) (*io.ReadCloser, error) {
 
-	svc := s3.New(h.AwsSession, confInitializer(sourceRegion))
+	svc := s3.New(h.AwsSession)
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(s3Path),
@@ -84,9 +94,9 @@ func (h *AwsHelper) GetFromS3(bucketName, s3Path string, sourceRegion string) (*
 }
 
 // ExistsInS3 checks that a given path in s3 exists as a file
-func (h *AwsHelper) ExistsInS3(bucketName, s3Path string, sourceRegion string) (bool, error) {
+func (h *S3Helper) ExistsInS3(bucketName, s3Path string) (bool, error) {
 
-	svc := s3.New(h.AwsSession, confInitializer(sourceRegion))
+	svc := s3.New(h.AwsSession)
 	input := &s3.HeadObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(s3Path),
@@ -103,7 +113,7 @@ func (h *AwsHelper) ExistsInS3(bucketName, s3Path string, sourceRegion string) (
 }
 
 // UploadToS3 writes the content of a bytes array to the given s3 path
-func (h *AwsHelper) UploadToS3(bucketName, s3Key string, data []byte) {
+func (h *S3Helper) UploadToS3(bucketName, s3Key string, data []byte) {
 	uploader := s3manager.NewUploader(h.AwsSession)
 
 	upParams := &s3manager.UploadInput{
@@ -125,14 +135,14 @@ func (h *AwsHelper) UploadToS3(bucketName, s3Key string, data []byte) {
 
 // ReaderToChannel reads the data from a backup line by line, serializes it and
 // sends it to the struct's channel
-func (h *AwsHelper) ReaderToChannel(dataReader *io.ReadCloser) error {
+func (h *S3Helper) ReaderToChannel(dataReader *io.ReadCloser, dataPipe chan map[string]*dynamodb.AttributeValue) error {
 	defer (*dataReader).Close()
 	scanner := bufio.NewScanner(*dataReader)
 	for scanner.Scan() {
 		res := map[string]*dynamodb.AttributeValue{}
 		data := scanner.Bytes()
 		json.Unmarshal(data[:], &res)
-		h.DataPipe <- res
+		dataPipe <- res
 	}
 	return scanner.Err()
 }
@@ -140,31 +150,31 @@ func (h *AwsHelper) ReaderToChannel(dataReader *io.ReadCloser) error {
 // S3ToDynamo pulls the s3 files from AwsHelper.ManifestS3 and import them
 // inside the given table using the given batch size (and wait period between
 // each batch)
-func (h *AwsHelper) S3ToDynamo(tableName string, batchSize int64, waitPeriod time.Duration, sourceRegion string) error {
+func (h *S3Helper) S3ToDynamo(tableName string, batchSize int64, waitPeriod time.Duration, dynamo *DynamoHelper) error {
 	var err error
-	go h.ChannelToTable(tableName, batchSize, waitPeriod)
-	h.Wg.Add(1)
+
+	dynamo.Wg.Add(1)
 	for _, entry := range h.ManifestS3.Entries {
 		u, _ := url.Parse(entry.URL)
 		if u.Scheme == "s3" {
-			data, err := h.GetFromS3(u.Host, u.Path, sourceRegion)
+			data, err := h.GetFromS3(u.Host, u.Path)
 			if err != nil {
 				return err
 			}
-			if err = h.ReaderToChannel(data); err != nil {
+			if err = h.ReaderToChannel(data, dynamo.DataPipe); err != nil {
 				break
 			}
 		}
 
 	}
-	close(h.DataPipe)
-	h.Wg.Wait()
+	close(dynamo.DataPipe)
+	dynamo.Wg.Wait()
 	return err
 }
 
 // DumpBuffer dumps the content of the given buffer to a new randomly generated
 // file name in the given s3 path in the given bucket and resets the said buffer
-func (h *AwsHelper) DumpBuffer(bucketName, s3Folder string, buff *bytes.Buffer) {
+func (h *S3Helper) DumpBuffer(bucketName, s3Folder string, buff *bytes.Buffer) {
 	filePath := fmt.Sprintf("%s/%s", s3Folder, genNewFileName())
 	h.UploadToS3(bucketName, filePath, buff.Bytes())
 	h.ManifestS3.Entries = append(h.ManifestS3.Entries, S3ManifestEntry{URL: fmt.Sprintf("s3://%s/%s", bucketName, filePath), Mandatory: true})
@@ -173,13 +183,13 @@ func (h *AwsHelper) DumpBuffer(bucketName, s3Folder string, buff *bytes.Buffer) 
 
 // ChannelToS3 reads from the given channel and sends the data the given bucket
 // in files of s3BufferSize max size
-func (h *AwsHelper) ChannelToS3(bucketName, s3Folder string, s3BufferSize int) {
-	defer h.Wg.Done()
+func (h *S3Helper) ChannelToS3(bucketName, s3Folder string, s3BufferSize int, dynamo *DynamoHelper) {
+	defer dynamo.Wg.Done()
 	// buff is the buffer where the data will be stored while before being sent to s3
 	var buff bytes.Buffer
 	h.ManifestS3 = S3Manifest{Version: 3, Name: "DynamoDB-export"}
 
-	for elem := range h.DataPipe {
+	for elem := range dynamo.DataPipe {
 		data, err := MarshalDynamoAttributeMap(elem)
 		if err != nil {
 			log.Fatalf("[ERROR] while converting to json: %v\nError: %s\n", elem, err)
