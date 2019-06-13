@@ -18,3 +18,5 @@ vendor/
 dynamodbdump
 # ignoring that one for now
 glide.lock
+
+.vscode/
