@@ -63,7 +63,7 @@ func restoreTable(bucket, prefix, tableName string, batchSize int64, waitPeriod 
 	}
 	go dynamo.ChannelToTable(tableName, batchSize, waitPeriod)
 	// For each file in the manifest pull the file, decode each line and add them to a batch and push them into the table (batch size, then wait and continue)
-	err = proc.S3ToDynamo(tableName, batchSize, waitPeriod, dynamo)
+	err = proc.S3ToDynamo(tableName, batchSize, waitPeriod, dynamo, bucket, prefix)
 	if err != nil {
 		log.Fatalf("[ERROR] Unable to import the full s3 backup to Dynamo: %s\nAborting...\n", err)
 	}

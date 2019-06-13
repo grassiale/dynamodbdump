@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"path"
 	"time"
 
 	"github.com/segmentio/ksuid"
@@ -150,14 +151,14 @@ func (h *S3Helper) ReaderToChannel(dataReader *io.ReadCloser, dataPipe chan map[
 // S3ToDynamo pulls the s3 files from AwsHelper.ManifestS3 and import them
 // inside the given table using the given batch size (and wait period between
 // each batch)
-func (h *S3Helper) S3ToDynamo(tableName string, batchSize int64, waitPeriod time.Duration, dynamo *DynamoHelper) error {
+func (h *S3Helper) S3ToDynamo(tableName string, batchSize int64, waitPeriod time.Duration, dynamo *DynamoHelper, bucket string, prefix string) error {
 	var err error
 
 	dynamo.Wg.Add(1)
 	for _, entry := range h.ManifestS3.Entries {
 		u, _ := url.Parse(entry.URL)
 		if u.Scheme == "s3" {
-			data, err := h.GetFromS3(u.Host, u.Path)
+			data, err := h.GetFromS3(bucket, prefix+"/"+path.Base(u.Path))
 			if err != nil {
 				return err
 			}
